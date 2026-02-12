@@ -69,6 +69,24 @@ class TestErrorCategorization(unittest.TestCase):
         cat = run_pipeline.categorize_error(0, "", "expected_output", "expected_output")
         self.assertEqual(cat, ErrorCategory.SUCCESS)
 
+    def test_empty_stdout_with_stderr_is_runtime_error(self):
+        """bal run can return 0 but program crashes silently with error in stderr."""
+        cat = run_pipeline.categorize_error(
+            0, "error: {ballerina}lang.value:ConversionError", "", "expected"
+        )
+        self.assertEqual(cat, ErrorCategory.RUNTIME_ERROR)
+
+    def test_empty_stdout_with_compile_stderr_is_compile_error(self):
+        cat = run_pipeline.categorize_error(
+            0, "ERROR: compilation error\nundefined symbol 'foo'", "", "expected"
+        )
+        self.assertEqual(cat, ErrorCategory.COMPILE_ERROR)
+
+    def test_empty_stdout_no_stderr_is_wrong_answer(self):
+        """No stderr means the program just didn't print anything."""
+        cat = run_pipeline.categorize_error(0, "", "", "expected")
+        self.assertEqual(cat, ErrorCategory.WRONG_ANSWER)
+
 
 class TestCleanStderr(unittest.TestCase):
     """Test that stderr is cleaned properly."""

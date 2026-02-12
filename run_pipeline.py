@@ -186,6 +186,21 @@ def categorize_error(
         ):
             return ErrorCategory.COMPILE_ERROR
         return ErrorCategory.RUNTIME_ERROR
+
+    # returncode == 0 but no output produced — likely a silent runtime error.
+    # Ballerina `bal run` can return 0 even when the program panics/errors
+    # if the compilation itself succeeded.  Check stderr for clues.
+    cleaned_stderr = clean_stderr(stderr)
+    if not stdout.strip() and cleaned_stderr:
+        # There's error info in stderr even though returncode was 0
+        lower = cleaned_stderr.lower()
+        if any(
+            kw in lower
+            for kw in ["compilation", "syntax", "undefined", "incompatible", "missing"]
+        ):
+            return ErrorCategory.COMPILE_ERROR
+        return ErrorCategory.RUNTIME_ERROR
+
     if stdout.strip() != expected.strip():
         return ErrorCategory.WRONG_ANSWER
     return ErrorCategory.SUCCESS
@@ -205,7 +220,8 @@ def evaluate_solution(
     code: str, test_cases: list
 ) -> tuple[bool, str, ErrorCategory]:
     """
-    Run code against all test cases.
+    Run code against all test cases.  Only need to run test case 1 to detect
+    compilation errors (they'll fail on every test case identically).
     Returns (success, feedback_message, error_category).
     """
     for i, test in enumerate(test_cases):
@@ -213,6 +229,7 @@ def evaluate_solution(
         expected_out = test.get("output", "").strip()
 
         returncode, stdout, stderr = run_ballerina_code(code, inp)
+        cleaned_stderr = clean_stderr(stderr)
         category = categorize_error(returncode, stderr, stdout, expected_out)
 
         if category == ErrorCategory.TIMEOUT:
@@ -224,24 +241,26 @@ def evaluate_solution(
             )
 
         if category in (ErrorCategory.COMPILE_ERROR, ErrorCategory.RUNTIME_ERROR):
-            cleaned = clean_stderr(stderr)
             return (
                 False,
-                f"{category.value} on Test Case {i+1}:\n{cleaned}",
+                f"{category.value} on Test Case {i+1}:\n{cleaned_stderr}",
                 category,
             )
 
         if category == ErrorCategory.WRONG_ANSWER:
-            return (
-                False,
-                (
-                    f"Wrong Answer on Test Case {i+1}.\n"
-                    f"Input:\n{_truncate(inp)}\n"
-                    f"Expected Output:\n{_truncate(expected_out)}\n"
-                    f"Actual Output:\n{_truncate(stdout.strip())}"
-                ),
-                category,
-            )
+            feedback_parts = [
+                f"Wrong Answer on Test Case {i+1}.",
+                f"Input:\n{_truncate(inp)}",
+                f"Expected Output:\n{_truncate(expected_out)}",
+                f"Actual Output:\n{_truncate(stdout.strip()) if stdout.strip() else '(empty — no output produced)'}",
+            ]
+            # Include stderr if present — it often has warnings/errors
+            # that explain WHY the output is wrong or empty
+            if cleaned_stderr:
+                feedback_parts.append(
+                    f"Stderr/Warnings:\n{_truncate(cleaned_stderr)}"
+                )
+            return (False, "\n".join(feedback_parts), category)
 
     return True, "All test cases passed.", ErrorCategory.SUCCESS
 
