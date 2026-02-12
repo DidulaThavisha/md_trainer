@@ -1,5 +1,3 @@
 unsloth
-vllm
 torch
-input
-# Any other dependencies might be needed, but these are the core ones mentioned.
+transformers
