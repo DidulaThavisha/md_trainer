@@ -217,13 +217,6 @@ def categorize_error(
 # ---------------------------------------------------------------------------
 # Evaluation
 # ---------------------------------------------------------------------------
-def _truncate(text: str, max_len: int = 500) -> str:
-    """Truncate long text to avoid blowing up the prompt context."""
-    if len(text) <= max_len:
-        return text
-    return text[:max_len] + f"\n... (truncated, {len(text)} chars total)"
-
-
 def evaluate_solution(
     code: str, test_cases: list
 ) -> tuple[bool, str, ErrorCategory]:
@@ -258,15 +251,15 @@ def evaluate_solution(
         if category == ErrorCategory.WRONG_ANSWER:
             feedback_parts = [
                 f"Wrong Answer on Test Case {i+1}.",
-                f"Input:\n{_truncate(inp)}",
-                f"Expected Output:\n{_truncate(expected_out)}",
-                f"Actual Output:\n{_truncate(stdout.strip()) if stdout.strip() else '(empty — no output produced)'}",
+                f"Input:\n{inp}",
+                f"Expected Output:\n{expected_out}",
+                f"Actual Output:\n{stdout.strip() if stdout.strip() else '(empty — no output produced)'}",
             ]
             # Include stderr if present — it often has warnings/errors
             # that explain WHY the output is wrong or empty
             if cleaned_stderr:
                 feedback_parts.append(
-                    f"Stderr/Warnings:\n{_truncate(cleaned_stderr)}"
+                    f"Stderr/Warnings:\n{cleaned_stderr}"
                 )
             return (False, "\n".join(feedback_parts), category)
 
@@ -630,6 +623,13 @@ def main():
     print(f"  Total processed : {stats['total']}")
     print(f"  Skipped (cached): {stats['skipped']}")
     print(f"  First-pass pass : {stats['first_pass']}")
+    print(f"  Recovered       : {stats['recovered']}")
+    print(f"  Failed          : {stats['failed']}")
+    print(f"Progress saved to {PROGRESS_FILE}")
+
+
+if __name__ == "__main__":
+    main()
     print(f"  Recovered       : {stats['recovered']}")
     print(f"  Failed          : {stats['failed']}")
     print(f"Progress saved to {PROGRESS_FILE}")
