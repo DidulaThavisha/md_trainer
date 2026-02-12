@@ -34,6 +34,7 @@ MAX_RETRIES = 4
 LOG_DIR = "log"
 NOTES_DIR = "notes"
 PROGRESS_FILE = "progress.json"
+MAX_SEQ_LENGTH = 8192
 BAL_TIMEOUT = 30  # seconds
 
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -193,6 +194,13 @@ def categorize_error(
 # ---------------------------------------------------------------------------
 # Evaluation
 # ---------------------------------------------------------------------------
+def _truncate(text: str, max_len: int = 500) -> str:
+    """Truncate long text to avoid blowing up the prompt context."""
+    if len(text) <= max_len:
+        return text
+    return text[:max_len] + f"\n... (truncated, {len(text)} chars total)"
+
+
 def evaluate_solution(
     code: str, test_cases: list
 ) -> tuple[bool, str, ErrorCategory]:
@@ -228,9 +236,9 @@ def evaluate_solution(
                 False,
                 (
                     f"Wrong Answer on Test Case {i+1}.\n"
-                    f"Input:\n{inp}\n"
-                    f"Expected Output:\n{expected_out}\n"
-                    f"Actual Output:\n{stdout.strip()}"
+                    f"Input:\n{_truncate(inp)}\n"
+                    f"Expected Output:\n{_truncate(expected_out)}\n"
+                    f"Actual Output:\n{_truncate(stdout.strip())}"
                 ),
                 category,
             )
@@ -396,11 +404,16 @@ def main():
     print(f"Loading model: {MODEL_NAME}...")
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name=MODEL_NAME,
-        max_seq_length=4096,
+        max_seq_length=MAX_SEQ_LENGTH,
         dtype=None,
         load_in_4bit=True,
     )
     FastLanguageModel.for_inference(model)
+
+    # Fix pad_token == eos_token issue (prevents attention mask warning)
+    if tokenizer.pad_token is None or tokenizer.pad_token == tokenizer.eos_token:
+        tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.padding_side = "left"
 
     # ------------------------------------------------------------------
     # Load data & progress
@@ -442,22 +455,50 @@ def main():
         # --------------------------------------------------------------
         # Feedback loop
         # --------------------------------------------------------------
-        messages = [
-            {
-                "role": "user",
-                "content": f"Solve this problem in Ballerina:\n{description}",
-            }
-        ]
         conversation_log = []
         solved = False
 
         for attempt in range(MAX_RETRIES):
-            # Generate code — greedy for first attempt, sampling for retries
+            # Build a SINGLE-TURN prompt for each attempt.
+            # Multi-turn accumulation overflows max_seq_length by attempt 3-4,
+            # causing the model to lose feedback entirely.
+            if attempt == 0:
+                prompt_content = f"Solve this problem in Ballerina:\n{description}"
+            else:
+                # Summarize previous attempts into a compact single-turn prompt
+                prev = conversation_log[-1]
+                prev_code = prev["code"]
+                prev_feedback = prev["feedback"]
+                prev_category = prev["category"]
+
+                fb_section = build_feedback_prompt(
+                    prev_feedback, ErrorCategory(prev_category),
+                    attempt, MAX_RETRIES, python_ref
+                )
+
+                prompt_content = (
+                    f"Solve this problem in Ballerina:\n{description}\n\n"
+                    f"--- Your Previous Attempt (attempt {attempt}) ---\n"
+                    f"```ballerina\n{prev_code}\n```\n\n"
+                    f"--- Feedback ---\n{fb_section}\n\n"
+                    f"Provide a completely corrected Ballerina solution."
+                )
+
+            messages = [{"role": "user", "content": prompt_content}]
+
             inputs = tokenizer.apply_chat_template(
                 messages, tokenize=True, add_generation_prompt=True, return_tensors="pt"
             ).to("cuda")
 
-            gen_kwargs = dict(max_new_tokens=2048, use_cache=True)
+            # Create proper attention mask
+            attention_mask = torch.ones_like(inputs).to("cuda")
+
+            token_count = inputs.shape[-1]
+            print(f"  [Attempt {attempt+1}] Input tokens: {token_count}")
+            if token_count > MAX_SEQ_LENGTH:
+                print(f"  ⚠️  WARNING: {token_count} tokens exceeds max_seq_length={MAX_SEQ_LENGTH}!")
+
+            gen_kwargs = dict(max_new_tokens=2048, use_cache=True, attention_mask=attention_mask)
             if attempt > 0:
                 gen_kwargs.update(temperature=0.7, do_sample=True)
 
@@ -478,21 +519,17 @@ def main():
                     "category": category.value,
                 }
             )
-            messages.append({"role": "assistant", "content": response})
 
             if success:
                 print(f"  ✅ Solved on attempt {attempt + 1}")
                 solved = True
                 break
             else:
-                summary = feedback[:120].replace("\n", " ")
-                print(f"  ❌ Attempt {attempt + 1} [{category.value}]: {summary}...")
-
-                if attempt < MAX_RETRIES - 1:
-                    fb_prompt = build_feedback_prompt(
-                        feedback, category, attempt, MAX_RETRIES, python_ref
-                    )
-                    messages.append({"role": "user", "content": fb_prompt})
+                summary = feedback[:200].replace("\n", " ")
+                print(f"  ❌ Attempt {attempt + 1} [{category.value}]: {summary}")
+                # Also log the actual output for debugging
+                actual_out = feedback.split("Actual Output:\n")[-1] if "Actual Output:" in feedback else "(see above)"
+                print(f"     Actual output: {actual_out[:150]}")
 
         # --------------------------------------------------------------
         # Post-processing
