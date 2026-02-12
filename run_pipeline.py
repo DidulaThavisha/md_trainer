@@ -151,16 +151,30 @@ def clean_stderr(stderr: str) -> str:
     lines = stderr.strip().splitlines()
     cleaned = []
     for line in lines:
+        stripped_line = line.strip()
         # Skip blank lines and build progress
-        if not line.strip():
+        if not stripped_line:
             continue
-        if line.strip().startswith("Compiling") or line.strip().startswith("Running"):
+        if stripped_line.startswith("Compiling") or stripped_line.startswith("Running"):
             continue
+
         # Strip absolute paths from error messages (keep filename:line:col)
+        # e.g. /tmp/bal_eval_xxx/main.bal:10:5 -> main.bal:10:5
         line = re.sub(r"/[^\s:]+/([^/\s:]+\.bal)", r"\1", line)
-        # Skip Java stack traces
-        if line.strip().startswith("at ") or "java." in line:
+
+        # Filter stack traces
+        if stripped_line.startswith("at "):
+            # Keep Ballerina stack traces (reference .bal files)
+            # Check for .bal: (line number) or .bal) (end of frame)
+            if ".bal:" in line or ".bal)" in line:
+                cleaned.append(line)
+            # Skip Java/internal stack traces
             continue
+        
+        # Skip explicit Java internal errors
+        if "java.lang" in line or "io.ballerina.runtime" in line:
+            continue
+
         cleaned.append(line)
     return "\n".join(cleaned).strip()
 

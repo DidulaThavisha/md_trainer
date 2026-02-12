@@ -104,10 +104,18 @@ class TestCleanStderr(unittest.TestCase):
         self.assertIn("missing semicolon", cleaned)
 
     def test_strips_java_stack_traces(self):
-        stderr = "error: something\nat java.lang.Thread.run(Thread.java:750)"
+        stderr = "error: something\n\tat java.lang.Thread.run(Thread.java:750)\n\tat io.ballerina.runtime.internal.BalRuntime.start(BalRuntime.java:100)"
         cleaned = run_pipeline.clean_stderr(stderr)
         self.assertIn("error: something", cleaned)
         self.assertNotIn("java.lang", cleaned)
+        self.assertNotIn("io.ballerina", cleaned)
+
+    def test_keeps_ballerina_stack_traces(self):
+        stderr = "error: panic\n\tat module.main(main.bal:10)\n\tat module.foo(utils.bal:5)"
+        cleaned = run_pipeline.clean_stderr(stderr)
+        self.assertIn("error: panic", cleaned)
+        self.assertIn("at module.main(main.bal:10)", cleaned)
+        self.assertIn("at module.foo(utils.bal:5)", cleaned)
 
 
 class TestFeedbackPrompt(unittest.TestCase):
