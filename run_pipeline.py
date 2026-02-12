@@ -107,27 +107,21 @@ def extract_code(response: str) -> str:
 # ---------------------------------------------------------------------------
 def run_ballerina_code(code: str, input_str: str) -> tuple[int, str, str]:
     """
-    Execute Ballerina code inside a proper Ballerina project.
-
-    Creates a temp directory with Ballerina.toml and main.bal, runs `bal run`,
-    and cleans up afterwards.
+    Execute Ballerina code as a standalone file.
+    
+    Creates a temp directory, writes main.bal, and runs `bal run main.bal`.
+    We avoid creating a full project (Ballerina.toml) to prevent nesting issues
+    and 'already within a Ballerina package' errors.
     """
     tmpdir = tempfile.mkdtemp(prefix="bal_eval_")
     try:
-        # Write Ballerina project structure
-        toml_content = (
-            "[package]\n"
-            'org = "eval"\n'
-            'name = "solution"\n'
-            'version = "0.1.0"\n'
-        )
-        with open(os.path.join(tmpdir, "Ballerina.toml"), "w") as f:
-            f.write(toml_content)
-        with open(os.path.join(tmpdir, "main.bal"), "w") as f:
+        # Write only the .bal file
+        file_path = os.path.join(tmpdir, "main.bal")
+        with open(file_path, "w") as f:
             f.write(code)
 
         process = subprocess.Popen(
-            ["bal", "run", "."],
+            ["bal", "run", "main.bal"],
             cwd=tmpdir,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
