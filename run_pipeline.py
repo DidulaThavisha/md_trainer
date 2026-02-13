@@ -31,6 +31,7 @@ import torch
 MODEL_NAME = "didula-wso2/exp_23_emb_grpo_checkpoint_220_16bit_vllm"
 DATA_FILE = "ballerina_grpo_X2.json"
 MAX_RETRIES = 8
+CONVERSATION_WINDOW = 3  # Keep last N user-assistant exchanges (plus system)
 LOG_DIR = "log"
 NOTES_DIR = "notes"
 PROGRESS_FILE = "progress.json"
@@ -570,84 +571,110 @@ def main():
             continue
 
         # --------------------------------------------------------------
-        # Feedback loop
+        # Feedback loop with CONVERSATION MODE
         # --------------------------------------------------------------
         conversation_log = []
         solved = False
+        
+        # Initialize conversation with system message
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT}
+        ]
 
         for attempt in range(MAX_RETRIES):
-            # Build a SINGLE-TURN prompt for each attempt.
+            # Build user prompt
             if attempt == 0:
+                # First attempt: just the problem
                 prompt_content = f"Solve this problem in Ballerina:\n{description}"
             else:
-                # Summarize previous attempts into a compact single-turn prompt
+                # Subsequent attempts: feedback on previous attempt
                 prev = conversation_log[-1]
-                prev_code = prev["code"]
-                prev_feedback = prev["feedback"]
                 prev_category = prev["category"]
-
+                
+                # Build targeted feedback
                 fb_section = build_feedback_prompt(
-                    prev_feedback, ErrorCategory(prev_category),
-                    attempt, MAX_RETRIES, python_ref
+                    prev["feedback"], 
+                    ErrorCategory(prev_category),
+                    attempt, 
+                    MAX_RETRIES, 
+                    python_ref
                 )
 
+                # Show limited context for awareness
+                num_recent = min(len(conversation_log), CONVERSATION_WINDOW)
                 prompt_content = (
-                    f"Solve this problem in Ballerina:\n{description}\n\n"
-                    f"--- Your Previous Attempt (attempt {attempt}) ---\n"
-                    f"```ballerina\n{prev_code}\n```\n\n"
-                    f"--- Feedback ---\n{fb_section}\n\n"
-                    f"Provide a completely corrected Ballerina solution."
+                    f"Your previous attempt (#{attempt}) failed.\n\n"
+                    f"{fb_section}\n\n"
+                    f"Note: You've made {len(conversation_log)} attempt(s) so far. "
+                    f"Review your last {num_recent} attempt(s) above and provide a CORRECTED solution.\n\n"
+                    f"Original problem:\n{description}"
                 )
-
-            messages = [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": prompt_content},
-            ]
-
+            
+            # Append user message to conversation
+            messages.append({"role": "user", "content": prompt_content})
+            
+            # Truncate to keep only recent exchanges (prevents context overflow)
+            messages = truncate_conversation(messages, window_size=CONVERSATION_WINDOW)
+            
+            # Generate response
             inputs = tokenizer.apply_chat_template(
-                messages, tokenize=True, add_generation_prompt=True, return_tensors="pt"
+                messages, 
+                tokenize=True, 
+                add_generation_prompt=True, 
+                return_tensors="pt"
             ).to("cuda")
-
-            # Create proper attention mask
-            attention_mask = torch.ones_like(inputs).to("cuda")
-
+            
             token_count = inputs.shape[-1]
-            print(f"  [Attempt {attempt+1}] Input tokens: {token_count}")
+            print(f"  [Attempt {attempt+1}] Input tokens: {token_count} (conv history: {len(messages)-1} exchanges)")
+            
+            # Safety check for context overflow
             if token_count > MAX_SEQ_LENGTH:
-                print(f"  ⚠️  WARNING: {token_count} tokens exceeds max_seq_length={MAX_SEQ_LENGTH}!")
-
+                print(f"  ⚠️  Context overflow! Reducing window size...")
+                # Emergency truncation: keep only last 2 exchanges
+                messages = truncate_conversation(messages, window_size=2)
+                inputs = tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=True,
+                    add_generation_prompt=True,
+                    return_tensors="pt"
+                ).to("cuda")
+                print(f"  Reduced to {inputs.shape[-1]} tokens")
+            
+            attention_mask = torch.ones_like(inputs).to("cuda")
+            
             gen_kwargs = dict(max_new_tokens=2048, use_cache=True, attention_mask=attention_mask)
             if attempt > 0:
                 gen_kwargs.update(temperature=0.7, do_sample=True)
 
             outputs = model.generate(inputs, **gen_kwargs)
             response = tokenizer.decode(
-                outputs[0][len(inputs[0]):], skip_special_tokens=True
+                outputs[0][len(inputs[0]):], 
+                skip_special_tokens=True
             )
-
+            
+            # Append assistant response to conversation
+            messages.append({"role": "assistant", "content": response})
+            
             code = extract_code(response)
             success, feedback, category = evaluate_solution(code, test_cases)
-
-            conversation_log.append(
-                {
-                    "attempt": attempt + 1,
-                    "response": response,
-                    "code": code,
-                    "feedback": feedback,
-                    "category": category.value,
-                }
-            )
-
+            
+            conversation_log.append({
+                "attempt": attempt + 1,
+                "response": response,
+                "code": code,
+                "feedback": feedback,
+                "category": category.value,
+            })
+            
             if success:
                 print(f"  ✅ Solved on attempt {attempt + 1}")
                 solved = True
                 break
             else:
-                summary = feedback[:200].replace("\n", " ")
-                print(f"  ❌ Attempt {attempt + 1} [{category.value}]: {summary}")
-                # Also log the actual output for debugging
-                actual_out = feedback.split("Actual Output:\n")[-1] if "Actual Output:" in feedback else "(see above)"
-                print(f"     Actual output: {actual_out[:150]}")
+                print(
+                    f"  ❌ Attempt {attempt + 1} [{category.value}]: {category.value} on Test Case 1: {feedback[:150]}"
+                )
+                print(f"     Actual output: (see above)")
 
         # --------------------------------------------------------------
         # Post-processing
