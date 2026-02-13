@@ -29,7 +29,7 @@ import torch
 # Configuration
 # ---------------------------------------------------------------------------
 MODEL_NAME = "didula-wso2/exp_23_emb_grpo_checkpoint_220_16bit_vllm"
-DATA_FILE = "ballerina_grpo_X2.json"
+DATA_FILE = "ballerina_grpo_X.json"
 MAX_RETRIES = 8
 LOG_DIR = "log"
 NOTES_DIR = "notes"
