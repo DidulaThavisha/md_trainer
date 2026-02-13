@@ -40,6 +40,92 @@ BAL_TIMEOUT = 30  # seconds
 os.makedirs(LOG_DIR, exist_ok=True)
 os.makedirs(NOTES_DIR, exist_ok=True)
 
+# ---------------------------------------------------------------------------
+# System Prompt for Ballerina Code Generation
+# ---------------------------------------------------------------------------
+SYSTEM_PROMPT = """\
+You are a pragmatic Ballerina programmer who enjoys test driven development. Given the following question, produce actual executable Ballerina code to complete the task and then write the unit tests to validate the functionality. Also implement a main function check with a user input.
+
+1. Make the code simple and easy to understand.
+2. Try to limit library usage to the standard library. Be careful with your types, and try to limit yourself to the basic built in types and standard library functions.
+3. Before you start writing the function you can think through how to solve the problem and perform reasoning in the comments above the function.
+4. Implement a main function to accept user inputs. Output the outputs of the function. The output format should match exactly as expected since the outputs will be automatically evaluated. So, Do not add any extra print statements other than the expected output. Same goes for inputs.
+5. Don't define inputs yourself. Do not hardcode inputs. Only use user inputs.
+6. Then write unit tests for the function you defined. Make sure to write at least 4 assertions to test the function. The tests should be a simple.
+
+
+[Important] Strictly follow the following output format for each response: Make sure to include code inside <CODE>  </CODE> blocks and tests inside <TESTS>  </TESTS> blocks. Only use Ballerina Programming Language. Never use any other programming languages. Implement proper error handling.
+
+# Overview
+Brief overview about the solution.
+
+<CODE>
+```ballerina
+// Reasoning goes here
+// and can be multi-line
+
+import ballerina/io;
+
+function add(int a, int b) returns int {
+    return a + b;
+}
+
+public function main() {
+    // 1. Read the space separated single line of input (This changes depending on the input format)
+    string|error line_input = io:readln();
+    if line_input is error {
+        return;
+    }
+
+    // 2. Split the string by the space character
+    string[] parts = line_input.split(" ");
+
+    // 3. Check if we have exactly two parts
+    if parts.length() != 2 {
+        return;
+    }
+
+    // 4. Parse the first part
+    int|error first_num = 'int:fromString(parts[0]);
+    if first_num is error {
+        return;
+    }
+
+    // 5. Parse the second part
+    int|error second_num = 'int:fromString(parts[1]);
+    if second_num is error {
+        return;
+    }
+
+    // 6. Call the function and print the result
+    int result = add(first_num, second_num);
+    io:println(result.toString());
+}
+```
+</CODE>
+
+<TESTS>
+```ballerina
+import ballerina/test;
+
+@test:Config { }
+function testAssertEquals() {
+    int addResult = add(40, 2);
+    test:assertEquals(addResult, 42);
+
+    addResult = add(0, 0);
+    test:assertEquals(addResult, 0);
+
+    addResult = add(-1, 1);
+    test:assertEquals(addResult, 0);
+
+    addResult = add(-5, -5);
+    test:assertEquals(addResult, -10);
+}
+```
+</TESTS>
+"""
+
 
 # ---------------------------------------------------------------------------
 # Error Categories
@@ -91,7 +177,18 @@ def save_progress(filepath: str, progress: dict):
 # Code extraction
 # ---------------------------------------------------------------------------
 def extract_code(response: str) -> str:
-    """Extract Ballerina code from a markdown-fenced response."""
+    """Extract Ballerina code from a structured response with <CODE> blocks or markdown fences."""
+    # First try to extract from <CODE>...</CODE> blocks
+    code_match = re.search(r"<CODE>\s*```ballerina(.*?)```\s*</CODE>", response, re.DOTALL)
+    if code_match:
+        return code_match.group(1).strip()
+
+    # Try <CODE> block with generic code fence
+    code_match = re.search(r"<CODE>\s*```(.*?)```\s*</CODE>", response, re.DOTALL)
+    if code_match:
+        return code_match.group(1).strip()
+
+    # Fall back to standard markdown extraction
     match = re.search(r"```ballerina(.*?)```", response, re.DOTALL)
     if match:
         return match.group(1).strip()
@@ -480,8 +577,6 @@ def main():
 
         for attempt in range(MAX_RETRIES):
             # Build a SINGLE-TURN prompt for each attempt.
-            # Multi-turn accumulation overflows max_seq_length by attempt 3-4,
-            # causing the model to lose feedback entirely.
             if attempt == 0:
                 prompt_content = f"Solve this problem in Ballerina:\n{description}"
             else:
@@ -504,7 +599,10 @@ def main():
                     f"Provide a completely corrected Ballerina solution."
                 )
 
-            messages = [{"role": "user", "content": prompt_content}]
+            messages = [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": prompt_content},
+            ]
 
             inputs = tokenizer.apply_chat_template(
                 messages, tokenize=True, add_generation_prompt=True, return_tensors="pt"
